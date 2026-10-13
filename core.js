@@ -600,8 +600,26 @@ function executeOne(op, backend, index) {
 
   if (op.kind === "delete") {
     const recursive = backend.isDir(op.path);
+    let before = null;
+
+    if (!recursive) {
+      before = backend.readIfExists(op.path);
+    }
+
     backend.remove(op.path);
-    return { kind: recursive ? "rmdir" : "delete", path: op.path, index };
+
+    const item = {
+      kind: recursive ? "rmdir" : "delete",
+      path: op.path,
+      index,
+    };
+
+    if (!recursive) {
+      item.before = before;
+      item.after = null;
+    }
+
+    return item;
   }
 
   throw new Error("Unknown operation: " + op.kind);
