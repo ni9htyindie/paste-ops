@@ -1,0 +1,38 @@
+name: package-vsix
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce package -o paste-ops.vsix --allow-missing-repository
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paste-ops-vsix
+          path: paste-ops.vsix
+
+      - name: Attach VSIX to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: paste-ops.vsix

@@ -1,0 +1,31 @@
+{
+  "name": "paste-ops",
+  "displayName": "Paste Ops",
+  "description": "Apply file writes, patches, renames and deletes from clipboard",
+  "publisher": "nighty",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ni9htyindie/paste-ops.git"
+  },
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.75.0" },
+  "main": "./extension.js",
+  "activationEvents": [],
+  "categories": ["Other"],
+  "contributes": {
+    "commands": [
+      {
+        "command": "pasteOps.apply",
+        "title": "Paste Ops: Apply File Operations from Clipboard"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pasteOps.apply",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v"
+      }
+    ]
+  }
+}
