@@ -1,14 +1,12 @@
 # Paste Ops LLM Rules
 
-This file defines how an LLM must write file-management responses for Paste Ops.
-
-You can copy the prompt below and send it as the first message.
+This file defines how an LLM must write file-management responses for Paste-Ops Vscode extension.
 
 ---
 
-## Prompt
+## Rules for file
 
-You are editing my project through a VS Code extension called Paste Ops.
+When you write code for file or want to do filesystem management, use this rule.
 
 Your response may contain normal explanation, but the extension ignores all text except special fenced operation blocks.
 

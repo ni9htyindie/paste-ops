@@ -12,6 +12,7 @@ const {
   diskBackend,
   preflight,
 } = require("./core");
+const { activate: activateContext } = require("./context");
 
 let output;
 const diffStore = new Map();
@@ -217,6 +218,393 @@ function inlineDiffHtml(before, after) {
   return `<div class="inline-diff">${out.join("")}</div>`;
 }
 
+/* ---------------- inline diff engine ---------------- */
+
+function renderDiffStatesCollapsed(states) {
+  const out = [];
+  const COLLAPSE_LIMIT = 200;
+  const KEEP = 20;
+
+  let i = 0;
+
+  while (i < states.length) {
+    if (states[i].type === "same") {
+      out.push(
+        diffLineHtml("same", states[i].oldLine ?? states[i].newLine ?? "")
+      );
+      i++;
+      continue;
+    }
+
+    const start = i;
+
+    while (i < states.length && states[i].type !== "same") {
+      i++;
+    }
+
+    const run = states.slice(start, i);
+
+    if (run.length <= COLLAPSE_LIMIT) {
+      for (const s of run) {
+        if (s.type === "add") {
+          out.push(diffLineHtml("add", s.newLine ?? ""));
+        } else {
+          out.push(diffLineHtml("del", s.oldLine ?? ""));
+        }
+      }
+    } else {
+      for (let x = 0; x < KEEP; x++) {
+        const s = run[x];
+
+        if (s.type === "add") {
+          out.push(diffLineHtml("add", s.newLine ?? ""));
+        } else {
+          out.push(diffLineHtml("del", s.oldLine ?? ""));
+        }
+      }
+
+      out.push(
+        `<div class="diff-gap">${run.length - KEEP * 2} changed line(s) collapsed. Use Open Diff for full detail.</div>`
+      );
+
+      for (let x = run.length - KEEP; x < run.length; x++) {
+        const s = run[x];
+
+        if (s.type === "add") {
+          out.push(diffLineHtml("add", s.newLine ?? ""));
+        } else {
+          out.push(diffLineHtml("del", s.oldLine ?? ""));
+        }
+      }
+    }
+  }
+
+  return out.join("");
+}
+
+function statesToHunks(states, context = 2) {
+  const changeIndexes = [];
+
+  for (let i = 0; i < states.length; i++) {
+    if (states[i].type !== "same") {
+      changeIndexes.push(i);
+    }
+  }
+
+  if (!changeIndexes.length) return [];
+
+  const ranges = [];
+
+  let start = Math.max(0, changeIndexes[0] - context);
+  let end = Math.min(states.length - 1, changeIndexes[0] + context);
+
+  for (let n = 1; n < changeIndexes.length; n++) {
+    const idx = changeIndexes[n];
+
+    const s = Math.max(0, idx - context);
+    const e = Math.min(states.length - 1, idx + context);
+
+    if (s <= end + 1) {
+      end = Math.max(end, e);
+    } else {
+      ranges.push([start, end]);
+      start = s;
+      end = e;
+    }
+  }
+
+  ranges.push([start, end]);
+
+  return ranges.map(([s, e]) => states.slice(s, e + 1));
+}
+
+function renderStatesHunks(states) {
+  const hunks = statesToHunks(states, 2);
+
+  if (!hunks.length) {
+    return '<div class="hint">No content change.</div>';
+  }
+
+  return `<div class="inline-diff">${hunks
+    .map((h) => `<div class="diff-hunk">${renderDiffStatesCollapsed(h)}</div>`)
+    .join('<div class="diff-gap">⋯</div>')}</div>`;
+}
+
+function backtrackMyers(trace, D, a, b) {
+  if (D === 0) {
+    return a.map((line) => ({
+      type: "same",
+      oldLine: line,
+      newLine: line,
+    }));
+  }
+
+  let x = a.length;
+  let y = b.length;
+
+  const edits = [];
+
+  for (let d = D; d > 0; d--) {
+    const v = trace[d];
+    const k = x - y;
+
+    let prevK;
+
+    if (k === -d) {
+      prevK = k + 1;
+    } else if (k === d) {
+      prevK = k - 1;
+    } else {
+      const down = v.get(k + 1) ?? -1;
+      const right = v.get(k - 1) ?? -1;
+      prevK = right < down ? k + 1 : k - 1;
+    }
+
+    const prevX = v.get(prevK) ?? 0;
+    const prevY = prevX - prevK;
+
+    while (x > prevX && y > prevY) {
+      edits.push({
+        type: "same",
+        oldLine: a[x - 1],
+        newLine: b[y - 1],
+      });
+      x--;
+      y--;
+    }
+
+    if (x === prevX) {
+      edits.push({ type: "add", newLine: b[y - 1] });
+      y--;
+    } else {
+      edits.push({ type: "del", oldLine: a[x - 1] });
+      x--;
+    }
+
+    x = prevX;
+    y = prevY;
+  }
+
+  while (x > 0 && y > 0) {
+    edits.push({
+      type: "same",
+      oldLine: a[x - 1],
+      newLine: b[y - 1],
+    });
+    x--;
+    y--;
+  }
+
+  return edits.reverse();
+}
+
+function myersStates(a, b, maxD = 2000) {
+  const N = a.length;
+  const M = b.length;
+
+  if (N === 0 && M === 0) return [];
+
+  if (N === 0) {
+    return b.map((line) => ({ type: "add", newLine: line }));
+  }
+
+  if (M === 0) {
+    return a.map((line) => ({ type: "del", oldLine: line }));
+  }
+
+  const trace = [];
+  const v = new Map([[0, 0]]);
+
+  for (let d = 0; d <= maxD; d++) {
+    trace.push(new Map(v));
+
+    for (let k = -d; k <= d; k += 2) {
+      let x;
+
+      if (
+        k === -d ||
+        (k !== d && (v.get(k + 1) ?? -1) > (v.get(k - 1) ?? -1))
+      ) {
+        x = v.get(k + 1) ?? 0;
+      } else {
+        x = (v.get(k - 1) ?? 0) + 1;
+      }
+
+      let y = x - k;
+
+      while (x < N && y < M && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+
+      v.set(k, x);
+
+      if (x >= N && y >= M) {
+        return backtrackMyers(trace, d, a, b);
+      }
+    }
+  }
+
+  return null;
+}
+
+function prefixSuffixHunkStates(a, b, context = 2) {
+  let start = 0;
+  const minLen = Math.min(a.length, b.length);
+
+  while (start < minLen && a[start] === b[start]) {
+    start++;
+  }
+
+  let endA = a.length;
+  let endB = b.length;
+
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+
+  if (start === endA && start === endB) return [];
+
+  const states = [];
+
+  const preStart = Math.max(0, start - context);
+
+  for (let i = preStart; i < start; i++) {
+    states.push({ type: "same", oldLine: a[i], newLine: b[i] });
+  }
+
+  for (let i = start; i < endA; i++) {
+    states.push({ type: "del", oldLine: a[i] });
+  }
+
+  for (let i = start; i < endB; i++) {
+    states.push({ type: "add", newLine: b[i] });
+  }
+
+  const postCount = Math.min(context, a.length - endA, b.length - endB);
+
+  for (let i = 0; i < postCount; i++) {
+    states.push({
+      type: "same",
+      oldLine: a[endA + i],
+      newLine: b[endB + i],
+    });
+  }
+
+  return states;
+}
+
+function renderPatchHunks(before, hunks) {
+  let working = String(before ?? "").replace(/\r\n/g, "\n");
+
+  const renderedHunks = [];
+
+  for (const hunk of hunks) {
+    const search = String(hunk.search ?? "").replace(/\r\n/g, "\n");
+    const replace = String(hunk.replace ?? "").replace(/\r\n/g, "\n");
+
+    const states = [];
+    const idx = working.indexOf(search);
+
+    if (idx >= 0) {
+      const lineStart = working.lastIndexOf("\n", idx - 1) + 1;
+
+      const beforeText = working.slice(0, lineStart);
+      const preLines = beforeText === "" ? [] : beforeText.split("\n");
+      const preContext = preLines.slice(-2);
+
+      const searchEnd = idx + search.length;
+      const nextLineStart = working.indexOf("\n", searchEnd);
+      const postText =
+        nextLineStart === -1 ? "" : working.slice(nextLineStart + 1);
+      const postLines = postText === "" ? [] : postText.split("\n");
+      const postContext = postLines.slice(0, 2);
+
+      for (const line of preContext) {
+        states.push({ type: "same", oldLine: line, newLine: line });
+      }
+
+      for (const line of search.split("\n")) {
+        states.push({ type: "del", oldLine: line });
+      }
+
+      for (const line of replace.split("\n")) {
+        states.push({ type: "add", newLine: line });
+      }
+
+      for (const line of postContext) {
+        states.push({ type: "same", oldLine: line, newLine: line });
+      }
+
+      working = working.replace(search, () => replace);
+    } else {
+      for (const line of search.split("\n")) {
+        states.push({ type: "del", oldLine: line });
+      }
+
+      for (const line of replace.split("\n")) {
+        states.push({ type: "add", newLine: line });
+      }
+    }
+
+    renderedHunks.push(
+      `<div class="diff-hunk">${renderDiffStatesCollapsed(states)}</div>`
+    );
+  }
+
+  return `<div class="inline-diff">${renderedHunks.join(
+    '<div class="diff-gap">⋯</div>'
+  )}</div>`;
+}
+
+function inlineDiffHtmlForItem(item) {
+  const before =
+    item.before === null || item.before === undefined
+      ? ""
+      : String(item.before);
+
+  const after =
+    item.after === null || item.after === undefined
+      ? ""
+      : String(item.after);
+
+  if (before === after) {
+    return '<div class="hint">No content change.</div>';
+  }
+
+  if (
+    item.kind === "patch" &&
+    Array.isArray(item.patchHunks) &&
+    item.patchHunks.length
+  ) {
+    return renderPatchHunks(before, item.patchHunks);
+  }
+
+  const a = before.replace(/\r\n/g, "\n").split("\n");
+  const b = after.replace(/\r\n/g, "\n").split("\n");
+
+  const MAX_MYERS_LINES = 20000;
+
+  if (a.length <= MAX_MYERS_LINES && b.length <= MAX_MYERS_LINES) {
+    const states = myersStates(a, b, 2000);
+
+    if (states) {
+      return renderStatesHunks(states);
+    }
+  }
+
+  const fallback = prefixSuffixHunkStates(a, b, 2);
+
+  if (!fallback.length) {
+    return '<div class="hint">No content change.</div>';
+  }
+
+  return `<div class="inline-diff"><div class="diff-hunk">${renderDiffStatesCollapsed(
+    fallback
+  )}</div></div>`;
+}
+
 /* ---------------- native diff ---------------- */
 
 function openDiff(item) {
@@ -286,7 +674,7 @@ function previewHtml(logItems, errors, nonce) {
       : "";
 
     const inlineDiff = canDiff
-      ? `<div class="diff-box">${inlineDiffHtml(item.before, item.after)}</div>`
+      ? `<div class="diff-box">${inlineDiffHtmlForItem(item)}</div>`
       : "";
 
     return `
@@ -413,6 +801,10 @@ function previewHtml(logItems, errors, nonce) {
   .diff-line.add { background: var(--vscode-diffEditor-insertedTextBackground, rgba(65, 160, 65, 0.18)); }
   .diff-line.del { background: var(--vscode-diffEditor-removedTextBackground, rgba(220, 70, 70, 0.18)); }
   .diff-line.same { opacity: .75; }
+
+  .diff-hunk { margin-bottom: 6px; }
+
+  .diff-gap { opacity: .55; text-align: center; font-size: 11px; margin: 4px 0; }
 
   .footer { position: sticky; bottom: 0; padding-top: 16px;
             display: flex; gap: 10px; align-items: center; }
@@ -604,7 +996,57 @@ async function chooseRoot() {
   return picked && picked[0] ? picked[0].fsPath : undefined;
 }
 
+function opLabel(op) {
+  if (!op) return "unknown";
+
+  if (op.kind === "rename") {
+    return `rename ${op.from} -> ${op.to}`;
+  }
+
+  return `${op.kind} ${op.path || "unknown"}`;
+}
+
+function buildOpsReport({ state, root, plan, selectedSet, errors }) {
+  const workspaceName = path.basename(root || "unknown");
+
+  const selected = [];
+  const unselected = [];
+
+  for (const r of plan.results) {
+    if (r.status !== "ok") continue;
+
+    const line = `#${r.index + 1} ${opLabel(r.op)}`;
+
+    if (selectedSet.has(r.index)) {
+      selected.push(line);
+    } else {
+      unselected.push(line);
+    }
+  }
+
+  const invalid = errors.length ? errors.map((e) => String(e)) : [];
+
+  return [
+    "```paste-ops-report",
+    `state: ${state}`,
+    `workspace: ${workspaceName}`,
+    "",
+    "selected:",
+    selected.length ? selected.map((x) => `- ${x}`).join("\n") : "- none",
+    "",
+    "unselected:",
+    unselected.length ? unselected.map((x) => `- ${x}`).join("\n") : "- none",
+    "",
+    "skipped-invalid:",
+    invalid.length ? invalid.map((x) => `- ${x}`).join("\n") : "- none",
+    "```",
+    "",
+  ].join("\n");
+}
+
 function activate(context) {
+  activateContext(context);
+
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider("pasteops-diff", {
       provideTextDocumentContent(uri) {
@@ -685,6 +1127,21 @@ function activate(context) {
           return;
         }
 
+        const preApplyReport = buildOpsReport({
+          state: "user-choice-before-apply",
+          root,
+          plan,
+          selectedSet,
+          errors,
+        });
+
+        await vscode.env.clipboard.writeText(preApplyReport);
+
+        vscode.window.setStatusBarMessage(
+          "Paste Ops: choice copied to clipboard",
+          4000
+        );
+
         const selectedBackend = memoryBackend(root);
         const selectedPlan = executeTolerant(selectedOps, selectedBackend);
 
@@ -704,6 +1161,16 @@ function activate(context) {
         execute(selectedPlan.validOps, diskBackend(root));
 
         const unselected = plan.validOps.length - selectedOps.length;
+
+        const appliedReport = buildOpsReport({
+          state: "applied",
+          root,
+          plan,
+          selectedSet,
+          errors,
+        });
+
+        await vscode.env.clipboard.writeText(appliedReport);
 
         log(
           `Applied ${selectedPlan.validOps.length}, ` +

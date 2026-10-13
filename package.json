@@ -1,14 +1,14 @@
 {
   "name": "paste-ops",
   "displayName": "Paste Ops",
-  "description": "Apply file writes, patches, renames, deletes, and dirs from clipboard with preview, grouping, diffs, and selective apply",
+  "description": "Apply file writes, patches, renames, deletes, and dirs from clipboard with preview, grouping, diffs, selective apply, and context export",
   "publisher": "nighty",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/paste-ops.git"
+    "url": "https://github.com/ni9htyindie/paste-ops.git"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -22,6 +22,10 @@
       {
         "command": "pasteOps.apply",
         "title": "Paste Ops: Apply File Operations from Clipboard"
+      },
+      {
+        "command": "pasteOps.copyFilesAsContext",
+        "title": "Paste Ops: Copy Files as Context"
       }
     ],
     "keybindings": [
@@ -29,7 +33,21 @@
         "command": "pasteOps.apply",
         "key": "ctrl+alt+v",
         "mac": "cmd+alt+v"
+      },
+      {
+        "command": "pasteOps.copyFilesAsContext",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "filesExplorerFocus"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "pasteOps.copyFilesAsContext",
+          "group": "9_cutcopypaste"
+        }
+      ]
+    }
   }
 }

@@ -589,6 +589,7 @@ function executeOne(op, backend, index) {
       before,
       after: finalText,
       hunks: hunks.length,
+      patchHunks: hunks,
       index,
     };
   }
