@@ -1,18 +1,22 @@
 {
   "name": "paste-ops",
   "displayName": "Paste Ops",
-  "description": "Apply file writes, patches, renames and deletes from clipboard",
+  "description": "Apply file writes, patches, renames, deletes, and dirs from clipboard with preview, grouping, diffs, and selective apply",
   "publisher": "nighty",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ni9htyindie/paste-ops.git"
+    "url": "https://github.com/YOUR_USERNAME/paste-ops.git"
   },
-  "version": "0.1.0",
-  "engines": { "vscode": "^1.75.0" },
+  "version": "0.2.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
   "main": "./extension.js",
   "activationEvents": [],
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "contributes": {
     "commands": [
       {

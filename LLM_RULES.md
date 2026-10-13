@@ -1,0 +1,160 @@
+# Paste Ops LLM Rules
+
+This file defines how an LLM must write file-management responses for Paste Ops.
+
+You can copy the prompt below and send it as the first message.
+
+---
+
+## Prompt
+
+You are editing my project through a VS Code extension called Paste Ops.
+
+Your response may contain normal explanation, but the extension ignores all text except special fenced operation blocks.
+
+Every filesystem change must be written as exactly one of these operation blocks.
+
+### 1. Create or overwrite a full file
+
+Use this when creating a new file or replacing the whole file.
+
+```file:relative/path/from/project/root.ext
+full file content
+```
+
+Rules:
+
+- Relative paths only.
+- Use forward slashes.
+- Parent folders are created automatically.
+- This overwrites the file if it already exists.
+
+### 2. Edit an existing file with exact SEARCH/REPLACE
+
+Use this only when you know the current file content.
+
+```patch:relative/path.ext
+<<<<<<< SEARCH
+exact existing code
+=======
+replacement code
+>>>>>>> REPLACE
+```
+
+Rules:
+
+- One patch block can contain multiple SEARCH/REPLACE hunks.
+- SEARCH must match the current file exactly.
+- SEARCH must match exactly once.
+- Include surrounding context if needed.
+- Do not use ellipses like `// ... existing code ...`.
+- Do not use line numbers alone.
+- If you cannot make SEARCH exact, output the full file with a file: block instead.
+
+### 3. Rename or move
+
+```rename:old/path.ext -> new/path.ext
+```
+
+Rules:
+
+- The target must not already exist.
+- Rename before patching the new path if needed.
+
+### 4. Delete
+
+```delete:path/to/file-or-folder
+```
+
+Rules:
+
+- Deletes a file.
+- If the path is a folder, deletes it recursively.
+- Use only when explicitly intended.
+
+### 5. Create empty folder
+
+```dir:path/to/folder/
+```
+
+Usually unnecessary because file: blocks create parent folders automatically.
+
+---
+
+## Important behavior rules
+
+1. Apply operations in the exact order written.
+2. Do not output bare snippets without file: or patch:.
+3. Do not put file content in normal ```js or ```ts blocks unless it is only an example.
+4. For each file, prefer one strategy:
+   - full file rewrite with file:
+   - exact patches with patch:
+5. Use file: when:
+   - the file is small
+   - the file is being created
+   - you are unsure how to patch it exactly
+6. Use patch: when:
+   - the file is large
+   - you know the current content
+   - the edit is small and exact
+7. If renaming and then editing, output rename first, then patch the new path.
+8. If deleting and recreating, output delete first, then file:.
+9. If a file contains triple backticks, use a longer outer fence, such as four backticks, around the file: or patch: block.
+10. Never use:
+   - absolute paths
+   - `..`
+   - `.git`
+   - symlink paths
+   - platform-specific drive letters
+
+---
+
+## Good response example
+
+Some explanation here.
+
+```file:src/config.json
+{
+  "debug": true
+}
+```
+
+```patch:src/main.js
+<<<<<<< SEARCH
+const debug = false;
+=======
+const debug = true;
+>>>>>>> REPLACE
+```
+
+```rename:src/old-helper.js -> src/helper.js
+```
+
+```delete:tmp/notes.txt
+```
+
+---
+
+## Bad response examples
+
+Do not do this:
+
+```js
+function example() {}
+```
+
+Paste Ops ignores it because it has no file: or patch: path.
+
+Do not do this:
+
+```patch:src/app.js
+<<<<<<< SEARCH
+// old function somewhere
+=======
+function newExample() {}
+>>>>>>> REPLACE
+```
+
+If `// old function somewhere` is not the exact current text, the patch fails.
+
+Instead, provide exact current code or rewrite the whole file.
