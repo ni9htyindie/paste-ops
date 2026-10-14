@@ -40,13 +40,13 @@ Paste Ops: Copy Files as Context
 ## Supported operation blocks
 
 ### Create or overwrite a file
-
+````
 ```file:src/app.js
 console.log("hello");
 ```
-
+````
 ### Patch an existing file
-
+````
 ```patch:src/app.js
 <<<<<<< SEARCH
 old code
@@ -54,30 +54,30 @@ old code
 new code
 >>>>>>> REPLACE
 ```
-
+````
 ### Rename or move
-
+````
 ```rename:src/old.js -> src/new.js
 ```
-
+````
 ### Delete
-
+````
 ```delete:src/old.js
 ```
-
+````
 ### Create empty folder
-
+````
 ```dir:public/uploads/
 ```
-
+````
 ### Binary context blocks
 
 Context export may produce:
-
+````
 ```file-base64:assets/icon.png
 iVBORw0KGgo...
 ```
-
+````
 This version uses `file-base64:` for context only. The apply command does not execute `file-base64:` blocks.
 
 ## Apply reports
