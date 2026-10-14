@@ -4,6 +4,7 @@
   "description": "Apply file writes, patches, renames, deletes, and dirs from clipboard with preview, grouping, diffs, selective apply, and context export",
   "publisher": "nighty",
   "license": "MIT",
+  "changelog": "CHANGELOG.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/ni9htyindie/paste-ops.git"
