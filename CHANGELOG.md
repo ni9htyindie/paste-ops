@@ -2,6 +2,20 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.4
+
+### Added
+
+- Second context copy button: **Copy selected overview**.
+- Content-free project tree exported as a `text:project-overview` block.
+- Overview file count, folder count, characters, and estimated tokens.
+- Live overview metrics that update as selection changes.
+
+### Changed
+
+- Context preview now offers two copy modes: full contents and overview only.
+- Overview mode includes no file contents and is not an applyable operation.
+
 ## v0.3 - 2026-10-14
 
 Changes since v0.1.

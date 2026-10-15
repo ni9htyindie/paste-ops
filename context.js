@@ -357,12 +357,15 @@ function contextPreviewHtml(entries, nonce) {
   button:disabled { opacity: .5; cursor: not-allowed; }
 
   .hint { opacity: .6; font-size: 12px; }
+
+  .overview-totals { border-left: 3px solid var(--vscode-textLink-foreground, #3794ff); }
 </style>
 </head>
 <body>
   <h1>Paste Ops — Copy Files as Context</h1>
   <div class="hint">
     Uncheck files you do not want. Token counts are estimates.
+    Full copy includes file contents. Overview copies only the folder/file tree.
   </div>
 
   <div class="toolbar">
@@ -376,6 +379,13 @@ function contextPreviewHtml(entries, nonce) {
     <div id="total-chars">Characters: 0</div>
     <div id="total-tokens">Estimated tokens: ~0</div>
     <div id="total-bytes">Bytes: 0 B</div>
+  </div>
+
+  <div class="totals overview-totals">
+    <div id="overview-files">Overview files: 0</div>
+    <div id="overview-folders">Folders: 0</div>
+    <div id="overview-chars">Overview characters: 0</div>
+    <div id="overview-tokens">Estimated overview tokens: ~0</div>
   </div>
 
   <table>
@@ -396,14 +406,16 @@ function contextPreviewHtml(entries, nonce) {
 
   <div class="footer">
     <button id="copy">Copy selected file blocks</button>
+    <button id="copy-overview" class="secondary">Copy selected overview</button>
     <button id="cancel" class="secondary">Cancel</button>
-    <span class="hint">Copied output uses file: blocks with relative paths.</span>
+    <span class="hint">Full copy includes contents. Overview copies only the file tree.</span>
   </div>
 
 <script nonce="${nonce}">
   const api = acquireVsCodeApi();
 
   const copyBtn = document.getElementById("copy");
+  const copyOverviewBtn = document.getElementById("copy-overview");
   const cancelBtn = document.getElementById("cancel");
   const filterInput = document.getElementById("filter");
   const selectAllVisible = document.getElementById("select-all-visible");
@@ -446,6 +458,9 @@ function contextPreviewHtml(entries, nonce) {
 
     copyBtn.disabled = files === 0;
     copyBtn.textContent = "Copy " + files + " file block(s)";
+    copyOverviewBtn.disabled = files === 0;
+
+    requestOverviewMetrics();
   }
 
   function applyFilter() {
@@ -477,11 +492,51 @@ function contextPreviewHtml(entries, nonce) {
     updateTotals();
   };
 
-  copyBtn.onclick = () => {
-    const selected = Array.from(document.querySelectorAll(".file-check:checked"))
+  function selectedIndexes() {
+    return Array.from(document.querySelectorAll(".file-check:checked"))
       .map((check) => Number(check.dataset.index));
+  }
 
-    api.postMessage({ command: "copy", selected: selected });
+  let metricsSeq = 0;
+
+  function requestOverviewMetrics() {
+    metricsSeq++;
+
+    api.postMessage({
+      command: "overview-metrics",
+      selected: selectedIndexes(),
+      seq: metricsSeq,
+    });
+  }
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+
+    if (!msg || msg.command !== "overview-metrics") return;
+    if (msg.seq !== metricsSeq) return;
+
+    document.getElementById("overview-files").textContent =
+      "Overview files: " + (msg.files || 0);
+
+    document.getElementById("overview-folders").textContent =
+      "Folders: " + (msg.folders || 0);
+
+    document.getElementById("overview-chars").textContent =
+      "Overview characters: " + (msg.chars || 0).toLocaleString();
+
+    document.getElementById("overview-tokens").textContent =
+      "Estimated overview tokens: ~" + (msg.tokens || 0).toLocaleString();
+  });
+
+  copyBtn.onclick = () => {
+    api.postMessage({ command: "copy", selected: selectedIndexes() });
+  };
+
+  copyOverviewBtn.onclick = () => {
+    api.postMessage({
+      command: "copy-overview",
+      selected: selectedIndexes(),
+    });
   };
 
   cancelBtn.onclick = () => {
@@ -517,9 +572,30 @@ function showContextPreview(entries) {
 
     panel.webview.onDidReceiveMessage((msg) => {
       if (msg.command === "copy") {
-        finish(Array.isArray(msg.selected) ? msg.selected : []);
+        finish({
+          mode: "full",
+          selected: Array.isArray(msg.selected) ? msg.selected : [],
+        });
+      } else if (msg.command === "copy-overview") {
+        finish({
+          mode: "overview",
+          selected: Array.isArray(msg.selected) ? msg.selected : [],
+        });
       } else if (msg.command === "cancel") {
         finish(null);
+      } else if (msg.command === "overview-metrics") {
+        const overview = buildOverview(entries, msg.selected || []);
+        const chars = overview.text.length;
+
+        panel.webview.postMessage({
+          command: "overview-metrics",
+          seq: msg.seq,
+          files: overview.files,
+          folders: overview.folders,
+          chars,
+          tokens: Math.ceil(chars / 4),
+          bytes: Buffer.byteLength(overview.text, "utf8"),
+        });
       }
     });
 
@@ -544,6 +620,87 @@ function buildContextText(entries, selectedIndexes) {
   }
 
   return blocks.join("\n\n") + "\n";
+}
+
+function buildOverviewTree(rels) {
+  const root = { dirs: new Map(), files: new Set() };
+
+  for (const rel of rels) {
+    const parts = rel.split("/").filter(Boolean);
+    if (!parts.length) continue;
+
+    let node = root;
+
+    for (let i = 0; i < parts.length - 1; i++) {
+      const name = parts[i];
+
+      if (!node.dirs.has(name)) {
+        node.dirs.set(name, { dirs: new Map(), files: new Set() });
+      }
+
+      node = node.dirs.get(name);
+    }
+
+    node.files.add(parts[parts.length - 1]);
+  }
+
+  const lines = [];
+  let folderCount = 0;
+
+  function walk(node, prefix) {
+    const children = [];
+
+    for (const name of node.dirs.keys()) {
+      children.push({ name, isDir: true });
+    }
+
+    for (const name of node.files) {
+      children.push({ name, isDir: false });
+    }
+
+    children.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const last = i === children.length - 1;
+
+      lines.push(
+        prefix +
+          (last ? "└── " : "├── ") +
+          child.name +
+          (child.isDir ? "/" : "")
+      );
+
+      if (child.isDir) {
+        folderCount++;
+        walk(node.dirs.get(child.name), prefix + (last ? "    " : "│   "));
+      }
+    }
+  }
+
+  walk(root, "");
+
+  return { text: lines.join("\n"), folders: folderCount };
+}
+
+function buildOverview(entries, selectedIndexes) {
+  const rels = Array.from(
+    new Set(
+      selectedIndexes
+        .map((i) => entries[i])
+        .filter((e) => e && !e.error && e.rel)
+        .map((e) => e.rel)
+    )
+  ).sort();
+
+  if (!rels.length) {
+    return { text: "", files: 0, folders: 0 };
+  }
+
+  const tree = buildOverviewTree(rels);
+  const text = "```text:project-overview\n" + tree.text + "\n```\n";
+
+  return { text, files: rels.length, folders: tree.folders };
 }
 
 async function copyFilesAsContext(uri, uris) {
@@ -586,15 +743,42 @@ async function copyFilesAsContext(uri, uris) {
       return;
     }
 
-    const selected = await showContextPreview(entries);
+    const choice = await showContextPreview(entries);
 
-    if (!selected || selected.length === 0) return;
+    if (!choice || !choice.selected || choice.selected.length === 0) return;
 
-    const text = buildContextText(entries, selected);
+    const isOverview = choice.mode === "overview";
+
+    const overview = isOverview
+      ? buildOverview(entries, choice.selected)
+      : null;
+
+    const text = isOverview
+      ? overview.text
+      : buildContextText(entries, choice.selected);
+
+    if (!text.trim()) {
+      vscode.window.showWarningMessage("Nothing selected to copy.");
+      return;
+    }
 
     await vscode.env.clipboard.writeText(text);
 
-    const selectedEntries = selected
+    if (isOverview) {
+      const chars = text.length;
+      const tokens = Math.ceil(chars / 4);
+
+      vscode.window.showInformationMessage(
+        `Paste Ops: copied overview — ${overview.files} file(s), ` +
+          `${overview.folders} folder(s), ` +
+          `${chars.toLocaleString()} chars, ` +
+          `~${tokens.toLocaleString()} tokens. No file contents included.`
+      );
+
+      return;
+    }
+
+    const selectedEntries = choice.selected
       .map((i) => entries[i])
       .filter((e) => e && !e.error);
 

@@ -19,7 +19,8 @@ Copy an LLM response, run Paste Ops, review operations, select what to apply, th
 - Copies an apply-choice report to clipboard before applying.
 - Copies a final applied report to clipboard after successful apply.
 - Exports selected Explorer files/folders as context blocks.
-- Shows character, estimated token, and byte metrics before copying context.
+- Copies either full file contents or a content-free project overview tree.
+- Shows character, estimated token, and byte metrics for both copy modes.
 - Handles binary files in context export as `file-base64:` blocks.
 - Automatically chooses longer fences when file content contains backticks.
 - Refuses unsafe paths, absolute paths, `..`, `.git`, and symlink targets.
@@ -123,7 +124,18 @@ There is no artificial size limit. You decide what is too large.
 
 Binary files are included as base64. You can uncheck any file before copying.
 
-The copied output uses relative paths and `file:` blocks, ready to paste into an LLM chat or a context document.
+The preview has two copy buttons:
+
+- **Copy selected file blocks** — full contents, one `file:` block per file.
+- **Copy selected overview** — only a folder/file tree, with no file contents.
+
+Overview mode copies a single `text:project-overview` block. It shows which
+folders and files exist, using paths relative to the workspace root. It is
+context only: Paste Ops does not apply it, and it must never be turned into
+empty `file:` blocks.
+
+The preview shows live metrics for both modes, including overview character
+and estimated token cost.
 
 ## LLM rules
 
