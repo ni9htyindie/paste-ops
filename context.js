@@ -3,6 +3,7 @@
 const vscode = require("vscode");
 const path = require("path");
 const crypto = require("crypto");
+const child_process = require("child_process");
 
 function humanBytes(n) {
   if (!Number.isFinite(n)) return "0 B";
@@ -176,6 +177,559 @@ async function getExplorerSelection() {
   } catch {
     return [];
   }
+}
+
+function parseGitignorePatterns(content, relativeDir) {
+  const patterns = [];
+  const lines = content.split(/\r?\n/);
+
+  for (let line of lines) {
+    line = line.replace(/\r$/, "").trimEnd();
+    if (!line || line.startsWith("#")) continue;
+
+    let negated = false;
+    if (line.startsWith("!")) {
+      negated = true;
+      line = line.slice(1);
+    }
+
+    line = line.replace(/(?<!\\)\s+$/, "");
+    if (!line) continue;
+    line = line.replace(/\\(\s+)$/, "$1");
+
+    let dirOnly = false;
+    if (line.endsWith("/")) {
+      dirOnly = true;
+      line = line.slice(0, -1);
+    }
+
+    const anchored = line.startsWith("/");
+    if (anchored) {
+      line = line.slice(1);
+    }
+
+    patterns.push({ pattern: line, negated, dirOnly, anchored, relativeDir });
+  }
+
+  return patterns;
+}
+
+function gitignorePatternToRegex(pattern, anchored, relativeDir) {
+  let regexStr = "";
+
+  if (relativeDir) {
+    regexStr += relativeDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/";
+  }
+
+  if (anchored || pattern.includes("/")) {
+    regexStr = "^" + regexStr;
+  } else {
+    regexStr = "(^|.*/)" + regexStr;
+  }
+
+  let i = 0;
+  while (i < pattern.length) {
+    if (pattern[i] === "*") {
+      if (pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          regexStr += "(?:.*/)?";
+          i += 3;
+        } else {
+          regexStr += ".*";
+          i += 2;
+        }
+      } else {
+        regexStr += "[^/]*";
+        i++;
+      }
+    } else if (pattern[i] === "?") {
+      regexStr += "[^/]";
+      i++;
+    } else if (pattern[i] === "[") {
+      let j = i + 1;
+      let charClass = "[";
+      if (j < pattern.length && (pattern[j] === "!" || pattern[j] === "^")) {
+        charClass += "^";
+        j++;
+      }
+      while (j < pattern.length && pattern[j] !== "]") {
+        charClass += pattern[j].replace(/[\\]/g, "\\\\");
+        j++;
+      }
+      if (j < pattern.length) {
+        charClass += "]";
+        regexStr += charClass;
+        i = j + 1;
+      } else {
+        regexStr += "\\[";
+        i++;
+      }
+    } else {
+      regexStr += pattern[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      i++;
+    }
+  }
+
+  regexStr += "(?:/.*)?$";
+
+  try {
+    return new RegExp(regexStr);
+  } catch {
+    return null;
+  }
+}
+
+function slashPath(p) {
+  return String(p || "").replace(/\\/g, "/");
+}
+
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isDotGitPath(rel) {
+  return rel === ".git" || rel.split("/").includes(".git");
+}
+
+function execGit(args, cwd) {
+  return new Promise((resolve) => {
+    try {
+      child_process.execFile(
+        "git",
+        args,
+        { cwd, windowsHide: true },
+        (error, stdout) => {
+          if (error) resolve(null);
+          else resolve(String(stdout || "").trim());
+        }
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function getGitRoot(cwd) {
+  const top = await execGit(["rev-parse", "--show-toplevel"], cwd);
+
+  if (!top) return null;
+
+  try {
+    return path.resolve(top);
+  } catch {
+    return null;
+  }
+}
+
+function runGitCheckIgnoreChunk(gitRoot, relPaths) {
+  return new Promise((resolve) => {
+    let settled = false;
+
+    const finish = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
+    let child;
+
+    try {
+      child = child_process.spawn(
+        "git",
+        ["-C", gitRoot, "check-ignore", "--stdin", "-z"],
+        { windowsHide: true }
+      );
+    } catch {
+      return finish(null);
+    }
+
+    const chunks = [];
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+
+      finish(null);
+    }, 20000);
+
+    child.on("error", () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+
+    child.stdout.on("data", (d) => chunks.push(d));
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+
+      if (code !== 0 && code !== 1) {
+        return finish(null);
+      }
+
+      const text = Buffer.concat(chunks).toString("utf8");
+      const set = new Set();
+
+      for (const p of text.split("\0")) {
+        const clean = slashPath(p).replace(/^\.\//, "").trim();
+
+        if (clean) {
+          set.add(clean);
+        }
+      }
+
+      finish(set);
+    });
+
+    try {
+      child.stdin.write(relPaths.join("\0") + "\0");
+      child.stdin.end();
+    } catch {
+      clearTimeout(timer);
+      finish(null);
+    }
+  });
+}
+
+async function gitCheckIgnore(gitRoot, relPaths) {
+  const unique = Array.from(new Set(relPaths.filter(Boolean)));
+
+  if (!unique.length) return new Set();
+
+  const result = new Set();
+  const CHUNK = 10000;
+
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const part = await runGitCheckIgnoreChunk(
+      gitRoot,
+      unique.slice(i, i + CHUNK)
+    );
+
+    if (part === null) return null;
+
+    for (const p of part) {
+      result.add(p);
+    }
+  }
+
+  return result;
+}
+
+function parseGitignoreRules(content, relativeDir) {
+  const patterns = [];
+  const lines = content.split(/\r?\n/);
+
+  for (let line of lines) {
+    line = line.trimEnd();
+
+    if (!line || line.startsWith("#")) continue;
+
+    let negated = false;
+
+    if (line.startsWith("!")) {
+      negated = true;
+      line = line.slice(1);
+    }
+
+    line = line.replace(/\s+$/, "");
+
+    if (!line) continue;
+
+    let dirOnly = false;
+
+    if (line.endsWith("/")) {
+      dirOnly = true;
+      line = line.slice(0, -1);
+    }
+
+    let anchored = false;
+
+    if (line.startsWith("/")) {
+      anchored = true;
+      line = line.slice(1);
+    }
+
+    if (!line) continue;
+
+    patterns.push({
+      pattern: line,
+      negated,
+      dirOnly,
+      anchored,
+      relativeDir,
+    });
+  }
+
+  return patterns;
+}
+
+function buildGitignoreRegex(pattern, anchored, relativeDir) {
+  let regexStr = "^";
+
+  if (relativeDir) {
+    regexStr += escapeRegex(relativeDir) + "/";
+  }
+
+  if (!anchored && !pattern.includes("/")) {
+    regexStr += "(?:.*/)?";
+  }
+
+  let i = 0;
+
+  while (i < pattern.length) {
+    const ch = pattern[i];
+
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          regexStr += "(?:.*/)?";
+          i += 3;
+        } else {
+          regexStr += ".*";
+          i += 2;
+        }
+      } else {
+        regexStr += "[^/]*";
+        i++;
+      }
+    } else if (ch === "?") {
+      regexStr += "[^/]";
+      i++;
+    } else if (ch === "[") {
+      let j = i + 1;
+      let cls = "[";
+
+      if (j < pattern.length && (pattern[j] === "!" || pattern[j] === "^")) {
+        cls += "^";
+        j++;
+      }
+
+      while (j < pattern.length && pattern[j] !== "]") {
+        cls += pattern[j];
+        j++;
+      }
+
+      if (j < pattern.length) {
+        cls += "]";
+        regexStr += cls;
+        i = j + 1;
+      } else {
+        regexStr += "\\[";
+        i++;
+      }
+    } else {
+      regexStr += escapeRegex(ch);
+      i++;
+    }
+  }
+
+  regexStr += "(?:/.*)?$";
+
+  try {
+    return new RegExp(regexStr);
+  } catch {
+    return null;
+  }
+}
+
+function isIgnoredByRules(relativePath, rules) {
+  if (!relativePath || relativePath === ".") return false;
+  if (relativePath.endsWith(".gitignore")) return false;
+
+  let ignored = false;
+
+  for (const rule of rules) {
+    if (rule.regex.test(relativePath)) {
+      ignored = !rule.negated;
+    }
+  }
+
+  return ignored;
+}
+
+async function readGitignoreRulesForFolder(folderUri, uris) {
+  const rootFs = folderUri.fsPath;
+  const dirs = new Set([rootFs]);
+
+  for (const uri of uris) {
+    let dir = path.dirname(uri.fsPath);
+    let guard = 0;
+
+    while (dir && guard < 100) {
+      dirs.add(dir);
+
+      if (dir === rootFs) break;
+
+      const parent = path.dirname(dir);
+
+      if (!parent || parent === dir) break;
+
+      dir = parent;
+      guard++;
+    }
+  }
+
+  const sorted = Array.from(dirs).sort(
+    (a, b) => a.length - b.length || a.localeCompare(b)
+  );
+
+  const rules = [];
+  let readCount = 0;
+
+  for (const dir of sorted) {
+    if (readCount >= 200) break;
+
+    const relDirRaw = slashPath(path.relative(rootFs, dir));
+    const relDir = relDirRaw === "." ? "" : relDirRaw;
+
+    if (relDir && isIgnoredByRules(relDir, rules)) {
+      continue;
+    }
+
+    try {
+      const giUri = vscode.Uri.joinPath(vscode.Uri.file(dir), ".gitignore");
+      const content = await vscode.workspace.fs.readFile(giUri);
+      const text = Buffer.from(content).toString("utf8");
+
+      const patterns = parseGitignoreRules(text, relDir);
+
+      for (const p of patterns) {
+        const regex = buildGitignoreRegex(p.pattern, p.anchored, p.relativeDir);
+
+        if (regex) {
+          rules.push({ ...p, regex });
+        }
+      }
+
+      readCount++;
+    } catch {}
+  }
+
+  return rules;
+}
+
+async function filterByGitignore(uris) {
+  if (!uris.length) return { kept: uris, removed: 0 };
+
+  const folders = vscode.workspace.workspaceFolders;
+
+  if (!folders || folders.length === 0) {
+    return { kept: uris, removed: 0 };
+  }
+
+  const kept = [];
+  let removed = 0;
+
+  const byFolder = new Map();
+  const outside = [];
+
+  for (const uri of uris) {
+    const wf = vscode.workspace.getWorkspaceFolder(uri);
+
+    if (!wf) {
+      outside.push(uri);
+      continue;
+    }
+
+    const key = wf.uri.toString();
+
+    if (!byFolder.has(key)) {
+      byFolder.set(key, { folder: wf, uris: [] });
+    }
+
+    byFolder.get(key).uris.push(uri);
+  }
+
+  kept.push(...outside);
+
+  for (const group of byFolder.values()) {
+    const folder = group.folder;
+    const folderUris = group.uris;
+
+    const gitRoot = await getGitRoot(folder.uri.fsPath);
+    let ignoredSet = null;
+
+    if (gitRoot) {
+      const rels = [];
+      const relMap = new Map();
+
+      for (const uri of folderUris) {
+        const raw = path.relative(gitRoot, uri.fsPath);
+
+        if (!raw || raw.startsWith("..") || path.isAbsolute(raw)) {
+          continue;
+        }
+
+        const rel = slashPath(raw);
+
+        rels.push(rel);
+        relMap.set(uri.toString(), rel);
+      }
+
+      ignoredSet = await gitCheckIgnore(gitRoot, rels);
+
+      if (ignoredSet) {
+        for (const uri of folderUris) {
+          const rel = relMap.get(uri.toString());
+
+          if (!rel) {
+            kept.push(uri);
+            continue;
+          }
+
+          if (isDotGitPath(rel)) {
+            removed++;
+            continue;
+          }
+
+          if (rel === ".gitignore" || rel.endsWith("/.gitignore")) {
+            kept.push(uri);
+            continue;
+          }
+
+          if (ignoredSet.has(rel)) {
+            removed++;
+          } else {
+            kept.push(uri);
+          }
+        }
+
+        continue;
+      }
+    }
+
+    const rules = await readGitignoreRulesForFolder(folder.uri, folderUris);
+
+    for (const uri of folderUris) {
+      const raw = path.relative(folder.uri.fsPath, uri.fsPath);
+
+      if (!raw || raw.startsWith("..") || path.isAbsolute(raw)) {
+        kept.push(uri);
+        continue;
+      }
+
+      const rel = slashPath(raw);
+
+      if (isDotGitPath(rel)) {
+        removed++;
+        continue;
+      }
+
+      if (rel === ".gitignore" || rel.endsWith("/.gitignore")) {
+        kept.push(uri);
+        continue;
+      }
+
+      if (isIgnoredByRules(rel, rules)) {
+        removed++;
+      } else {
+        kept.push(uri);
+      }
+    }
+  }
+
+  return { kept, removed };
 }
 
 async function expandUris(uris) {
@@ -736,7 +1290,23 @@ async function copyFilesAsContext(uri, uris) {
       return;
     }
 
-    const entries = await loadEntries(expanded);
+    const { kept, removed } = await filterByGitignore(expanded);
+
+    if (!kept.length) {
+      vscode.window.showWarningMessage(
+        `All ${expanded.length} selected file(s) are excluded by .gitignore.`
+      );
+      return;
+    }
+
+    if (removed > 0) {
+      vscode.window.setStatusBarMessage(
+        `Paste Ops: ${removed} file(s) excluded by .gitignore`,
+        5000
+      );
+    }
+
+    const entries = await loadEntries(kept);
 
     if (!entries.length) {
       vscode.window.showWarningMessage("No readable files found.");
