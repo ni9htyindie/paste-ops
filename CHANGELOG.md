@@ -2,6 +2,20 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.5
+
+### Added
+
+- Parser now recovers common LLM drift patterns instead of silently ignoring them.
+- Recovered patterns include `lang:path`, `lang path`, and preceding lines like `File 3: path` or `### path`.
+- Recovered operations are always treated as `file:` (never patch/rename/delete) for safety.
+- Recovered operations appear with a yellow `RECOVERED` badge and a reason note in the preview.
+- Users can uncheck recovered operations individually if the recovery is wrong.
+
+### Changed
+
+- Parser no longer strictly drops code blocks that lack a recognized operation header if the file path can be safely inferred.
+
 ## v0.4
 
 ### Added

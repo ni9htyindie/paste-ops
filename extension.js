@@ -613,6 +613,31 @@ function previewHtml(logItems, errors, nonce) {
           ${diffButton}
         </div>
 
+        ${
+          item.recovered
+            ? `<div class="dep-note" style="color:#dca342;">⚠ Recovered from non-standard syntax: ${escapeHtml(
+                item.recoveryReason || "unknown"
+              )}</div>`
+            : ""
+        }
+
+        ${depNote}
+=======
+          <span class="badge ${item.kind}">${item.kind.toUpperCase()}</span>
+          ${item.recovered ? `<span class="badge recovered">RECOVERED</span>` : ""}
+          <code>${escapeHtml(label)}</code>
+          <span class="meta">${meta}</span>
+          ${diffButton}
+        </div>
+
+        ${
+          item.recovered
+            ? `<div class="dep-note" style="color:#dca342;">⚠ Recovered from non-standard syntax: ${escapeHtml(
+                item.recoveryReason || "unknown"
+              )}</div>`
+            : ""
+        }
+
         ${depNote}
         <div class="dep-warning-note hidden"></div>
 
@@ -694,6 +719,7 @@ function previewHtml(logItems, errors, nonce) {
 
   .badge.delete, .badge.rmdir { background: #a33; color: #fff; }
   .badge.rename { background: #369; color: #fff; }
+  .badge.recovered { background: #b8860b; color: #fff; }
 
   code { font-family: var(--vscode-editor-font-family); }
 

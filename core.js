@@ -157,14 +157,88 @@ function parseClipboard(text) {
       } catch (e) {
         parseErrors.push(`Line ${lineNo}: ${e.message}`);
       }
+
+      i = closed ? j + 1 : j;
+      continue;
+    }
+
+    if (!closed) {
+      i = j;
+      continue;
+    }
+
+    const recovered = tryRecoverFileOp(info, lines, i, body, indent);
+
+    if (recovered) {
+      ops.push({ ...recovered, line: lineNo, recovered: true });
     } else if (info) {
       ignored++;
     }
 
-    i = closed ? j + 1 : j;
+    i = j + 1;
   }
 
   return { ops, ignored, parseErrors };
+}
+
+function tryRecoverFileOp(info, lines, closeIndex, body, indent) {
+  const content = dedent(body, indent);
+
+  if (info) {
+    const colonMatch = info.match(/^([A-Za-z0-9_+#\-]+)\s*:\s*(.+)$/);
+    if (colonMatch) {
+      const p = cleanPath(colonMatch[2]);
+      if (p) {
+        return {
+          kind: "file",
+          path: p,
+          body: content,
+          recoveryReason: `fence info \`${info}\` interpreted as file:${p}`,
+        };
+      }
+    }
+
+    const spaceMatch = info.match(/^([A-Za-z0-9_+#\-]+)\s+(\S+)$/);
+    if (spaceMatch) {
+      const p = cleanPath(spaceMatch[2]);
+      if (p) {
+        return {
+          kind: "file",
+          path: p,
+          body: content,
+          recoveryReason: `fence info \`${info}\` interpreted as file:${p}`,
+        };
+      }
+    }
+  }
+
+  for (let k = closeIndex - body.length - 2; k >= 0 && k >= closeIndex - body.length - 6; k--) {
+    const prev = lines[k];
+    if (prev === undefined) continue;
+
+    const stripped = prev.trim();
+    if (!stripped) continue;
+
+    const headerMatch = stripped.match(
+      /^(?:#{1,6}\s+)?(?:[*_]{0,2})?(?:File\s*\d*\s*[:\-]?\s*|`{1,3}file:\s*)([`'"]?)([\w./\\\-][\w./\\\- ]*?\.\w+)\1[`'"]?(?:\s|$)/i
+    );
+
+    if (headerMatch) {
+      const p = cleanPath(headerMatch[2]);
+      if (p) {
+        return {
+          kind: "file",
+          path: p,
+          body: content,
+          recoveryReason: `preceding line \`${stripped.slice(0, 80)}\` interpreted as file:${p}`,
+        };
+      }
+    }
+
+    break;
+  }
+
+  return null;
 }
 
 /* ---------------- patch parser ---------------- */
@@ -559,6 +633,8 @@ function executeOne(op, backend, index) {
       path: op.path,
       before,
       after,
+      recovered: !!op.recovered,
+      recoveryReason: op.recoveryReason || null,
       index,
     };
   }
