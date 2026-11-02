@@ -2,6 +2,13 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.5.1
+
+### Fixed
+
+- Bash/shell code blocks like `npx --yes @vscode/vsce package` are no longer misdetected as file operations.
+- Path detection now requires no whitespace inside a single path, while still allowing `old -> new` rename syntax.
+
 ## v0.5
 
 ### Added

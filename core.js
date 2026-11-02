@@ -23,6 +23,43 @@ function cleanPath(raw) {
   return norm;
 }
 
+function looksLikePathSegment(s) {
+  const trimmed = String(s).trim();
+
+  if (!trimmed) return false;
+  if (/\s/.test(trimmed)) return false;
+  if (/[<>:"|?*\0]/.test(trimmed)) return false;
+  if (trimmed === "." || trimmed === "..") return false;
+  if (/^[a-z]:/i.test(trimmed)) return false;
+
+  if (trimmed.includes("/")) return true;
+  if (/\.\w{1,10}$/.test(trimmed)) return true;
+
+  return false;
+}
+
+function looksLikePath(line) {
+  const trimmed = String(line).trim();
+
+  if (!trimmed) return false;
+
+  if (trimmed.includes("->")) {
+    const parts = trimmed.split(/\s*->\s*/);
+
+    if (parts.length !== 2) return false;
+
+    const right = parts[1].trim();
+
+    if (/^(delete|remove)$/i.test(right)) {
+      return looksLikePathSegment(parts[0]);
+    }
+
+    return looksLikePathSegment(parts[0]) && looksLikePathSegment(right);
+  }
+
+  return looksLikePathSegment(trimmed);
+}
+
 function absPath(root, rel) {
   const p = path.resolve(root, ...rel.split("/"));
   if (p !== root && !p.startsWith(root + path.sep)) {
@@ -66,8 +103,6 @@ function withEol(text, reference) {
 
 /* ---------------- clipboard parser ---------------- */
 
-const OP_RE = /^(file|patch|rename|delete|dir)\s*:\s*(.+)$/i;
-
 function dedent(lines, n) {
   if (!n) return lines;
   return lines.map((line) => {
@@ -81,6 +116,45 @@ function dedent(lines, n) {
     }
     return line.slice(i);
   });
+}
+
+function parseOperationLine(line) {
+  const trimmed = line.trim();
+
+  if (trimmed.includes("->")) {
+    const parts = trimmed.split(/\s*->\s*/);
+    const target = parts[1].toLowerCase().trim();
+
+    if (target === "delete" || target === "remove") {
+      const p = cleanPath(parts[0]);
+      if (!p || !looksLikePath(parts[0])) return null;
+      return { kind: "delete", path: p };
+    }
+
+    const from = cleanPath(parts[0]);
+    const to = cleanPath(parts[1]);
+
+    if (!from || !to) return null;
+    if (!looksLikePath(parts[0]) || !looksLikePath(parts[1])) return null;
+    return { kind: "rename", from, to };
+  }
+
+  if (trimmed.endsWith("/")) {
+    const p = cleanPath(trimmed);
+    if (!p) return null;
+    return { kind: "dir", path: p };
+  }
+
+  if (!looksLikePath(trimmed)) return null;
+
+  const p = cleanPath(trimmed);
+  if (!p) return null;
+
+  return { kind: "file", path: p };
+}
+
+function isPatchContent(body) {
+  return body.some((line) => /^<{5,}\s*SEARCH\s*$/.test(line));
 }
 
 function parseClipboard(text) {
@@ -116,129 +190,59 @@ function parseClipboard(text) {
       j++;
     }
 
-    const op = info.match(OP_RE);
-
-    if (op) {
-      if (!closed) {
-        parseErrors.push(
-          `Line ${lineNo}: unclosed ${op[1]} block. Skipping the rest of the clipboard.`
-        );
-        break;
-      }
-
-      try {
-        const kind = op[1].toLowerCase();
-        const arg = op[2].trim();
-        const content = dedent(body, indent);
-
-        if (kind === "rename") {
-          const parts = arg.split(/\s*(?:->|→|=>)\s*/);
-          if (parts.length !== 2 || !parts[0].trim() || !parts[1].trim()) {
-            throw new Error("Bad rename. Use: rename:old/path -> new/path");
-          }
-
-          const from = cleanPath(parts[0]);
-          const to = cleanPath(parts[1]);
-
-          if (!from || !to) {
-            throw new Error(`Unsafe rename path: ${arg}`);
-          }
-
-          ops.push({ kind, from, to, line: lineNo });
-        } else {
-          const p = cleanPath(arg);
-
-          if (!p) {
-            throw new Error(`Unsafe path: ${arg}`);
-          }
-
-          ops.push({ kind, path: p, body: content, line: lineNo });
-        }
-      } catch (e) {
-        parseErrors.push(`Line ${lineNo}: ${e.message}`);
-      }
-
-      i = closed ? j + 1 : j;
-      continue;
-    }
-
     if (!closed) {
       i = j;
       continue;
     }
 
-    const recovered = tryRecoverFileOp(info, lines, i, body, indent);
+    const content = dedent(body, indent);
 
-    if (recovered) {
-      ops.push({ ...recovered, line: lineNo, recovered: true });
-    } else if (info) {
-      ignored++;
+    let operationLine = null;
+    let contentStart = 0;
+
+    if (info && looksLikePath(info)) {
+      operationLine = info;
+    } else if (content.length > 0 && looksLikePath(content[0])) {
+      operationLine = content[0];
+      contentStart = 1;
     }
+
+    if (!operationLine) {
+      ignored++;
+      i = j + 1;
+      continue;
+    }
+
+    const parsed = parseOperationLine(operationLine);
+
+    if (!parsed) {
+      ignored++;
+      i = j + 1;
+      continue;
+    }
+
+    const finalContent = content.slice(contentStart);
+
+    if (parsed.kind === "file" && isPatchContent(finalContent)) {
+      parsed.kind = "patch";
+    }
+
+    if (parsed.kind === "file" && finalContent.length === 0) {
+      ignored++;
+      i = j + 1;
+      continue;
+    }
+
+    ops.push({
+      ...parsed,
+      body: parsed.kind === "patch" || parsed.kind === "file" ? finalContent : undefined,
+      line: lineNo,
+    });
 
     i = j + 1;
   }
 
   return { ops, ignored, parseErrors };
-}
-
-function tryRecoverFileOp(info, lines, closeIndex, body, indent) {
-  const content = dedent(body, indent);
-
-  if (info) {
-    const colonMatch = info.match(/^([A-Za-z0-9_+#\-]+)\s*:\s*(.+)$/);
-    if (colonMatch) {
-      const p = cleanPath(colonMatch[2]);
-      if (p) {
-        return {
-          kind: "file",
-          path: p,
-          body: content,
-          recoveryReason: `fence info \`${info}\` interpreted as file:${p}`,
-        };
-      }
-    }
-
-    const spaceMatch = info.match(/^([A-Za-z0-9_+#\-]+)\s+(\S+)$/);
-    if (spaceMatch) {
-      const p = cleanPath(spaceMatch[2]);
-      if (p) {
-        return {
-          kind: "file",
-          path: p,
-          body: content,
-          recoveryReason: `fence info \`${info}\` interpreted as file:${p}`,
-        };
-      }
-    }
-  }
-
-  for (let k = closeIndex - body.length - 2; k >= 0 && k >= closeIndex - body.length - 6; k--) {
-    const prev = lines[k];
-    if (prev === undefined) continue;
-
-    const stripped = prev.trim();
-    if (!stripped) continue;
-
-    const headerMatch = stripped.match(
-      /^(?:#{1,6}\s+)?(?:[*_]{0,2})?(?:File\s*\d*\s*[:\-]?\s*|`{1,3}file:\s*)([`'"]?)([\w./\\\-][\w./\\\- ]*?\.\w+)\1[`'"]?(?:\s|$)/i
-    );
-
-    if (headerMatch) {
-      const p = cleanPath(headerMatch[2]);
-      if (p) {
-        return {
-          kind: "file",
-          path: p,
-          body: content,
-          recoveryReason: `preceding line \`${stripped.slice(0, 80)}\` interpreted as file:${p}`,
-        };
-      }
-    }
-
-    break;
-  }
-
-  return null;
 }
 
 /* ---------------- patch parser ---------------- */
@@ -276,7 +280,7 @@ function parseHunks(body) {
     const search = body.slice(start, sep).join("\n");
     const replace = body.slice(sep + 1, end).join("\n");
 
-    if (!search.length) throw new Error("Empty SEARCH block. Use ```file: to create a file.");
+    if (!search.length) throw new Error("Empty SEARCH block.");
 
     hunks.push({ search, replace });
     i = end + 1;
@@ -320,7 +324,7 @@ function applyHunk(content, hunk) {
   if (count === 0) {
     throw new Error(
       "SEARCH not found verbatim. Copy the exact current lines with surrounding context, " +
-      "or use ```file: to rewrite the whole file."
+      "or rewrite the whole file."
     );
   }
 
@@ -356,7 +360,7 @@ function memoryBackend(root) {
     snap(rel);
     const content = snapshot.get(rel);
     if (content === null) {
-      throw new Error("File does not exist: " + rel + ". Use ```file: to create it.");
+      throw new Error("File does not exist: " + rel);
     }
     files.set(rel, content);
     return content;
@@ -417,7 +421,7 @@ function memoryBackend(root) {
           walk(a, r);
         } else if (e.isFile()) {
           if (out.size >= 2000) {
-            throw new Error("Directory too large to preview safely. Rename it manually.");
+            throw new Error("Directory too large to preview safely.");
           }
           if (!isDead(r)) out.add(r);
         }
@@ -633,8 +637,6 @@ function executeOne(op, backend, index) {
       path: op.path,
       before,
       after,
-      recovered: !!op.recovered,
-      recoveryReason: op.recoveryReason || null,
       index,
     };
   }
@@ -665,7 +667,6 @@ function executeOne(op, backend, index) {
       before,
       after: finalText,
       hunks: hunks.length,
-      patchHunks: hunks,
       index,
     };
   }

@@ -1,123 +1,102 @@
-# Paste Ops LLM Rules
+# File Operation Rules
 
-This file defines how an LLM must write file-management responses for Paste-Ops Vscode extension.
+## Unified Syntax
 
----
+Every filesystem operation uses a single code block format:
+The parser detects operation type automatically from the first line.
 
-## Rules for file
+## Operation Types
 
-When you write code for file or want to do filesystem management, use this rule.
+### Create/Write File
 
-Your response may contain normal explanation, but the extension ignores all text except special fenced operation blocks.
-
-Every filesystem change must be written as exactly one of these operation blocks.
-
-### 1. Create or overwrite a full file
-
-Use this when creating a new file or replacing the whole file.
-
-```file:relative/path/from/project/root.ext
-full file content
+`````
 ```
+path/to/file.ext
+file content here
+```
+`````
+OR
+`````
+```path/to/file.ext
+file content here
+```
+`````
+The same rule apply for other operation.
 
-Rules:
+- Relative paths only, forward slashes
+- Parent folders created automatically
+- Overwrites if file exists
 
-- Relative paths only.
-- Use forward slashes.
-- Parent folders are created automatically.
-- This overwrites the file if it already exists.
+### Patch File (Edit)
 
-### 2. Edit an existing file with exact SEARCH/REPLACE
-
-Use this only when you know the current file content.
-
-```patch:relative/path.ext
+`````
+```
+path/to/file.ext
 <<<<<<< SEARCH
-exact existing code
+exact current lines
 =======
-replacement code
+replacement lines
 >>>>>>> REPLACE
 ```
+`````
 
-Rules:
+- SEARCH must match exactly once
+- Include enough context for uniqueness
+- Multiple SEARCH/REPLACE blocks allowed in one operation
 
-- One patch block can contain multiple SEARCH/REPLACE hunks.
-- SEARCH must match the current file exactly.
-- SEARCH must match exactly once.
-- Include surrounding context if needed.
-- Do not use ellipses like `// ... existing code ...`.
-- Do not use line numbers alone.
-- If you cannot make SEARCH exact, output the full file with a file: block instead.
+### Rename/Move
 
-### 3. Rename or move
-
-```rename:old/path.ext -> new/path.ext
+`````
 ```
-
-Rules:
-
-- The target must not already exist.
-- Rename before patching the new path if needed.
-
-### 4. Delete
-
-```delete:path/to/file-or-folder
+old/path.ext -> new/path.ext
 ```
+`````
 
-Rules:
+- Target must not exist
+- Rename before patching new path
 
-- Deletes a file.
-- If the path is a folder, deletes it recursively.
-- Use only when explicitly intended.
+### Delete
 
-### 5. Create empty folder
-
-```dir:path/to/folder/
+`````
 ```
+path/to/file-or-folder -> delete
+```
+`````
 
-Usually unnecessary because file: blocks create parent folders automatically.
+- Deletes file or folder recursively
 
----
+### Create Empty Folder
 
-## Important behavior rules
+`````
+```
+path/to/folder/
+```
+`````
 
-1. Apply operations in the exact order written.
-2. Do not output bare snippets without file: or patch:.
-3. Do not put file content in normal ```js or ```ts blocks unless it is only an example.
-4. For each file, prefer one strategy:
-   - full file rewrite with file:
-   - exact patches with patch:
-5. Use file: when:
-   - the file is small
-   - the file is being created
-   - you are unsure how to patch it exactly
-6. Use patch: when:
-   - the file is large
-   - you know the current content
-   - the edit is small and exact
-7. If renaming and then editing, output rename first, then patch the new path.
-8. If deleting and recreating, output delete first, then file:.
-9. If a file contains triple backticks, use a longer outer fence, such as four backticks, around the file: or patch: block.
-10. Never use:
-   - absolute paths
-   - `..`
-   - `.git`
-   - symlink paths
-   - platform-specific drive letters
+- Must end with `/`
+- No content
+- Usually unnecessary (file operations create parents)
 
----
+## Rules
 
-## Good response example
+- Relative paths only (no `/`, `..`, `.git`, absolute paths)
+- Forward slashes only
+- Apply operations in written order
+- No whitespace in paths (except around `->` for rename/delete)
+- Files containing ` ``` ` need longer outer fences
 
-Some explanation here.
+## Valid Examples
 
-```file:src/config.json
+`````
+```
+src/config.json
 {
   "debug": true
 }
 ```
 
-```patch:src/main.js
+```
+src/main.js
 <<<<<<< SEARCH
 const debug = false;
 =======
@@ -125,61 +104,59 @@ const debug = true;
 >>>>>>> REPLACE
 ```
 
-```rename:src/old-helper.js -> src/helper.js
+```
+src/old.js -> src/new.js
 ```
 
-```delete:tmp/notes.txt
+```
+tmp/cache -> delete
 ```
 
----
+```
+public/uploads/
+```
+`````
 
-## Reading Paste Ops feedback
+## If File Contains Triple Backticks
 
-When I paste a `paste-ops-report` block, treat it as the result of my manual review:
+Use longer outer fence:
 
-- `selected` means the operation was applied.
-- `unselected` means I chose not to apply it.
-- `skipped-invalid` means the operation was not applied because it failed validation.
-
-When I paste context generated by `Paste Ops: Copy Files as Context`, treat each `file:` block as current provided file content.
-
-`file-base64:` blocks are binary context only in this version. Do not assume the apply command can execute them unless support is added.
-
-## Reading project overview context
-
-Paste Ops can also copy a content-free overview.
-
-- It appears as a `text:project-overview` block.
-- It lists folders and files as a tree, using relative paths.
-- It contains no file contents.
-
-Treat it as a map of what exists, not as file content. Do not patch or rewrite
-files based on the overview alone. When you need actual content, ask for a full
-context copy or the specific file.
-
-Never turn an overview entry into an empty `file:` block. That would erase the
-real file if applied.
-
-## Bad response examples
-
-Do not do this:
+`````
+````
+docs/example.md
+Example:
 
 ```js
-function example() {}
+console.log(1);
 ```
+````
+`````
 
-Paste Ops ignores it because it has no file: or patch: path.
+## Patch Rules
 
-Do not do this:
+- SEARCH must match current file exactly
+- SEARCH must match exactly once
+- Include surrounding context
+- No ellipses (`// ... existing code ...`)
+- No line numbers alone
+- If unsure, write full file instead
 
-```patch:src/app.js
-<<<<<<< SEARCH
-// old function somewhere
-=======
-function newExample() {}
->>>>>>> REPLACE
-```
+## Reading Feedback
 
-If `// old function somewhere` is not the exact current text, the patch fails.
+When given `paste-ops-report`:
 
-Instead, provide exact current code or rewrite the whole file.
+- `selected` = applied
+- `unselected` = rejected by user
+- `skipped-invalid` = failed validation
+
+Fix exact structural mistakes from `skipped-invalid` and re-emit only corrected operations.
+
+## Recovery
+
+If unsure about syntax:
+
+1. Use minimal examples above
+2. Ask for one known-good example
+3. Ask for `paste-ops-report` from previous apply
+
+Never guess syntax.
