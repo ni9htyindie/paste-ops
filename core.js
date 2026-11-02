@@ -118,6 +118,22 @@ function dedent(lines, n) {
   });
 }
 
+function extractPathFromFenceInfo(info) {
+  if (!info) return null;
+
+  const match = info.match(/^([a-zA-Z0-9_+#-]+)[\s:]+(.+)$/);
+  if (match) {
+    const left = match[1];
+    const right = match[2].trim();
+
+    if (!left.includes("/") && !left.includes(".")) {
+      return right;
+    }
+  }
+
+  return info;
+}
+
 function parseOperationLine(line) {
   const trimmed = line.trim();
 
@@ -200,9 +216,14 @@ function parseClipboard(text) {
     let operationLine = null;
     let contentStart = 0;
 
-    if (info && looksLikePath(info)) {
-      operationLine = info;
-    } else if (content.length > 0 && looksLikePath(content[0])) {
+    if (info) {
+      const extracted = extractPathFromFenceInfo(info);
+      if (looksLikePath(extracted)) {
+        operationLine = extracted;
+      }
+    }
+
+    if (!operationLine && content.length > 0 && looksLikePath(content[0])) {
       operationLine = content[0];
       contentStart = 1;
     }

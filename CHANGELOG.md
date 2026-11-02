@@ -2,6 +2,13 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.5.2
+
+### Fixed
+
+- Language tags in fence info (e.g. ` ```typescript:path/file.ts`, ` ```JSON:config.json`) are now automatically stripped.
+- The parser no longer mistakes language tags with colons (like `typescript:`) for Windows drive letters.
+
 ## v0.5.1
 
 ### Fixed
