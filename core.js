@@ -28,7 +28,7 @@ function looksLikePathSegment(s) {
 
   if (!trimmed) return false;
   if (/\s/.test(trimmed)) return false;
-  if (/[<>:"|?*\0]/.test(trimmed)) return false;
+  if (/[<>:"|?*\0`]/.test(trimmed)) return false;
   if (trimmed === "." || trimmed === "..") return false;
   if (/^[a-z]:/i.test(trimmed)) return false;
 
@@ -196,13 +196,36 @@ function parseClipboard(text) {
     const body = [];
     let closed = false;
 
+    let nestedFenceLength = 0;
+
     while (j < lines.length) {
-      const close = lines[j].match(/^(\s*)(`{3,}|~{3,})\s*$/);
-      if (close && close[2][0] === marker[0] && close[2].length >= marker.length) {
-        closed = true;
-        break;
+      const line = lines[j];
+      const fenceMatch = line.match(/^(\s*)(`{3,}|~{3,})\s*(.*)$/);
+
+      if (fenceMatch && fenceMatch[2][0] === marker[0] && fenceMatch[2].length >= marker.length) {
+        const info = fenceMatch[3].trim();
+
+        if (nestedFenceLength > 0) {
+          if (info.length === 0 && fenceMatch[2].length >= nestedFenceLength) {
+            nestedFenceLength = 0;
+            body.push(line);
+            j++;
+            continue;
+          }
+        } else {
+          if (info.length > 0) {
+            nestedFenceLength = fenceMatch[2].length;
+            body.push(line);
+            j++;
+            continue;
+          } else {
+            closed = true;
+            break;
+          }
+        }
       }
-      body.push(lines[j]);
+
+      body.push(line);
       j++;
     }
 
@@ -223,9 +246,25 @@ function parseClipboard(text) {
       }
     }
 
-    if (!operationLine && content.length > 0 && looksLikePath(content[0])) {
-      operationLine = content[0];
-      contentStart = 1;
+    if (!operationLine) {
+      for (let k = 0; k < content.length; k++) {
+        const line = content[k].trim();
+        if (!line) continue;
+
+        const stripped = line.replace(/^(`{3,}|~{3,})\s*/, "").replace(/\s*(`{3,}|~{3,})$/, "").trim();
+
+        if (!stripped) continue;
+
+        const extracted = extractPathFromFenceInfo(stripped);
+
+        if (looksLikePath(extracted)) {
+          operationLine = extracted;
+          contentStart = k + 1;
+          break;
+        } else {
+          break;
+        }
+      }
     }
 
     if (!operationLine) {

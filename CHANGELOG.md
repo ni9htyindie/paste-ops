@@ -2,6 +2,22 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.5.7
+
+### Fixed
+
+- Parser now correctly strips and evaluates file paths wrapped in 4, 5, or more backticks.
+- The content scanner no longer blindly skips lines starting with backticks; it extracts the text inside them.
+- Backticks are now explicitly treated as invalid characters in raw path segments.
+- Improved nested fence tracking to correctly handle multiple sequential nested code blocks of any length.
+
+## v0.5.3
+
+### Fixed
+
+- Files containing nested code blocks (like markdown files with code examples) are no longer truncated.
+- The parser now tracks nested fences and only treats bare ``` as a closing fence when not inside a nested fence.
+
 ## v0.5.2
 
 ### Fixed
