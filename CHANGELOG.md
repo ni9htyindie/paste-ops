@@ -2,6 +2,13 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.5.8
+
+### Fixed
+
+- Parser now forgives LLM typos in patch opening markers (e.g. `<<<<<<< REPLACE` instead of `<<<<<<< SEARCH`).
+- Prevented a critical bug where a typo'd patch block would be misclassified as a full file overwrite, destroying the file in memory and causing all subsequent patches to the same file to fail.
+
 ## v0.5.7
 
 ### Fixed

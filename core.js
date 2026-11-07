@@ -170,7 +170,10 @@ function parseOperationLine(line) {
 }
 
 function isPatchContent(body) {
-  return body.some((line) => /^<{5,}\s*SEARCH\s*$/.test(line));
+  const hasOpen = body.some((line) => /^<{5,}/.test(line));
+  const hasSep = body.some((line) => /^={5,}\s*$/.test(line));
+  const hasClose = body.some((line) => /^>{5,}\s*REPLACE\s*$/.test(line));
+  return hasOpen && hasSep && hasClose;
 }
 
 function parseClipboard(text) {
@@ -312,7 +315,7 @@ function parseHunks(body) {
   let i = 0;
 
   while (i < body.length) {
-    if (!/^<{5,}\s*SEARCH\s*$/.test(body[i])) {
+    if (!/^<{5,}/.test(body[i])) {
       i++;
       continue;
     }
