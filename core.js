@@ -205,6 +205,19 @@ function parseClipboard(text) {
       const line = lines[j];
       const fenceMatch = line.match(/^(\s*)(`{3,}|~{3,})\s*(.*)$/);
 
+      // If a patch block forgot its closing fence, but the next path-fence starts,
+      // treat the previous patch as complete and let the next block be parsed.
+      if (fenceMatch && isPatchContent(body)) {
+        const nextInfo = fenceMatch[3].trim();
+        const nextPath = extractPathFromFenceInfo(nextInfo);
+
+        if (nextInfo && looksLikePath(nextPath)) {
+          closed = true;
+          j = j - 1;
+          break;
+        }
+      }
+
       if (fenceMatch && fenceMatch[2][0] === marker[0] && fenceMatch[2].length >= marker.length) {
         const info = fenceMatch[3].trim();
 
@@ -368,36 +381,109 @@ function countOccur(haystack, needle) {
   return n;
 }
 
-function applyHunk(content, hunk) {
-  const text = lf(content);
-  let needle = hunk.search;
-  let replacement = hunk.replace;
-  let count = countOccur(text, needle);
+function lineOffsets(lines) {
+  const offsets = [];
+  let pos = 0;
 
-  if (count === 0 && !needle.endsWith("\n")) {
-    const withNewline = needle + "\n";
-    const c = countOccur(text, withNewline);
-    if (c > 0) {
-      needle = withNewline;
-      replacement = replacement.length ? replacement + "\n" : "";
-      count = c;
+  for (const line of lines) {
+    offsets.push(pos);
+    pos += line.length + 1;
+  }
+
+  return offsets;
+}
+
+function findNormalizedSpan(text, needle, normalizer) {
+  const textLines = text.split("\n");
+  const needleLines = needle.split("\n");
+
+  if (!needleLines.length) return null;
+
+  const offsets = lineOffsets(textLines);
+  const matches = [];
+
+  for (let start = 0; start <= textLines.length - needleLines.length; start++) {
+    let ok = true;
+
+    for (let j = 0; j < needleLines.length; j++) {
+      if (normalizer(textLines[start + j]) !== normalizer(needleLines[j])) {
+        ok = false;
+        break;
+      }
+    }
+
+    if (ok) {
+      const last = start + needleLines.length - 1;
+      matches.push({
+        start: offsets[start],
+        end: offsets[last] + textLines[last].length,
+      });
     }
   }
 
-  if (count === 0) {
+  if (matches.length === 1) return matches[0];
+
+  if (matches.length > 1) {
     throw new Error(
-      "SEARCH not found verbatim. Copy the exact current lines with surrounding context, " +
-      "or rewrite the whole file."
+      `SEARCH matches ${matches.length} places after whitespace normalization. Add more context.`
     );
   }
 
-  if (count > 1) {
+  return null;
+}
+
+function applyHunk(content, hunk) {
+  const text = lf(content);
+  const needle = hunk.search;
+  const replacement = hunk.replace;
+
+  const exactCount = countOccur(text, needle);
+
+  if (exactCount === 1) {
+    return text.replace(needle, () => replacement);
+  }
+
+  if (exactCount > 1) {
     throw new Error(
-      `SEARCH matches ${count} places. Add more surrounding context to make it unique.`
+      `SEARCH matches ${exactCount} places. Add more surrounding context to make it unique.`
     );
   }
 
-  return text.replace(needle, () => replacement);
+  if (!needle.endsWith("\n")) {
+    const withNewline = needle + "\n";
+    const c = countOccur(text, withNewline);
+
+    if (c === 1) {
+      return text.replace(withNewline, () =>
+        replacement.length ? replacement + "\n" : ""
+      );
+    }
+
+    if (c > 1) {
+      throw new Error(
+        `SEARCH matches ${c} places. Add more surrounding context to make it unique.`
+      );
+    }
+  }
+
+  const trimTrailing = (s) => s.replace(/[ \t]+$/g, "");
+  let span = findNormalizedSpan(text, needle, trimTrailing);
+
+  if (span) {
+    return text.slice(0, span.start) + replacement + text.slice(span.end);
+  }
+
+  const trimBoth = (s) => s.trim();
+  span = findNormalizedSpan(text, needle, trimBoth);
+
+  if (span) {
+    return text.slice(0, span.start) + replacement + text.slice(span.end);
+  }
+
+  throw new Error(
+    "SEARCH not found. Exact and whitespace-tolerant matching failed. " +
+    "Copy more exact surrounding context, or rewrite the whole file."
+  );
 }
 
 /* ---------------- in-memory backend (dry run) ---------------- */

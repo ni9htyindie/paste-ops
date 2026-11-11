@@ -2,6 +2,14 @@
 
 All notable changes to Paste Ops are documented here.
 
+## v0.6.0
+
+### Fixed
+
+- SEARCH matching is now whitespace-forgiving: tries exact match, then trailing-whitespace-normalized, then indentation-normalized.
+- Parser now forgives LLM typos in patch opening markers (e.g. `<<<<<<< REPLACE` instead of `<<<<<<< SEARCH`).
+- Prevented misclassification of typo'd patch blocks as full file overwrites.
+
 ## v0.5.8
 
 ### Fixed
